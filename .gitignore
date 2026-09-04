@@ -4,3 +4,5 @@ __pycache__/
 *.pt
 *.pyc
 .ipynb_checkpoints/
+*.bin
+*.bin.gz
