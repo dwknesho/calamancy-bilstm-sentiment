@@ -26,7 +26,7 @@ Download from https://www.anaconda.com/download and install with default options
 
 ### 2. Clone this repo
 ```
-git clone https://github.com/YOUR-USERNAME/YOUR-REPO-NAME.git
+git clone https://github.com/dwknesho/calamancy-bilstm-sentiment.git
 cd calamancy-bilstm-sentiment
 ```
 
