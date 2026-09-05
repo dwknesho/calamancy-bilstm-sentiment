@@ -1,0 +1,16 @@
+baseline — Test Set Results
+Accuracy:       0.7639
+Macro Precision: 0.7691
+Macro Recall:    0.7659
+Macro F1-score:  0.7652
+
+Per-class report:
+              precision    recall  f1-score   support
+
+    Negative       0.73      0.84      0.78      1027
+     Neutral       0.70      0.66      0.68      1087
+    Positive       0.88      0.80      0.84      1033
+
+    accuracy                           0.76      3147
+   macro avg       0.77      0.77      0.77      3147
+weighted avg       0.77      0.76      0.76      3147
