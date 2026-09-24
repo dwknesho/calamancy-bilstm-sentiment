@@ -1,30 +1,31 @@
+import os
+
 import fasttext
 import fasttext.util
 import numpy as np
 
+_MODEL_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "fasttext")
+
 
 def load_fasttext_model(lang: str = "tl"):
-    """
-    Downloads (if not already present) and loads the pre-trained
-    Facebook FastText model for the given language code.
-    Default 'tl' = Tagalog (cc.tl.300.bin).
-    """
-    fasttext.util.download_model(lang, if_exists='ignore')  # downloads cc.tl.300.bin
-    model = fasttext.load_model(f'cc.{lang}.300.bin')
-    return model
+    """Loads FastText for `lang`, downloading it once if needed. Default: Tagalog."""
+    bin_path = os.path.join(_MODEL_CACHE_DIR, f"cc.{lang}.300.bin")
+    if not os.path.exists(bin_path):
+        cwd = os.getcwd()
+        os.makedirs(_MODEL_CACHE_DIR, exist_ok=True)
+        os.chdir(_MODEL_CACHE_DIR)
+        try:
+            fasttext.util.download_model(lang, if_exists="ignore")
+        finally:
+            os.chdir(cwd)
+    return fasttext.load_model(bin_path)
 
 
 def get_word_vector(model, word: str) -> np.ndarray:
-    """
-    Returns the 300-dim FastText vector for a single word.
-    FastText handles OOV words automatically via subword n-grams.
-    """
+    """FastText vector for one word."""
     return model.get_word_vector(word)
 
 
 def get_review_vectors(model, tokens: list) -> np.ndarray:
-    """
-    Given a list of tokens (a tokenized review), returns a
-    (num_tokens, 300) matrix of FastText vectors — one row per token.
-    """
+    """FastText vector per token -> (num_tokens, 300) matrix."""
     return np.array([get_word_vector(model, tok) for tok in tokens])
