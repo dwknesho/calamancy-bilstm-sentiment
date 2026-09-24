@@ -6,3 +6,4 @@ __pycache__/
 .ipynb_checkpoints/
 *.bin
 *.bin.gz
+docs/EXPERIMENT_LOG.md
