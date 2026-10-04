@@ -10,7 +10,7 @@ from data_prep import MAX_LEN, build_feature_arrays, load_all_splits, truncate
 from dataset import ReviewDataset
 from evaluate import evaluate_model, save_metrics
 from feature_extraction import load_fasttext_model
-from features import build_tagset, save_tagsets
+from features import build_morph_set, build_tagset, save_tagsets
 from model import FUSIONS, BiLSTMClassifier
 from tokenization import DEFAULT_TAGGER
 from train import set_seed, time_pilot, train_model
@@ -81,16 +81,24 @@ def artifacts_dir(tagger: str) -> str:
     return os.path.join(MODEL_DIR, tagger)
 
 
-def model_label(model: str, fusion: str) -> str:
-    """Results folder name. 'proposed' alone means the manuscript's concat fusion."""
-    return model if model == "baseline" or fusion == "concat" else f"{model}-{fusion}"
+# Which calamanCy outputs the proposed model receives.
+FEATURE_SETS = ("pos_dep", "pos_dep_morph")
+
+
+def model_label(model: str, fusion: str, features: str = "pos_dep") -> str:
+    """Results folder name. 'proposed' alone means the manuscript's concat fusion;
+    '-morph' is added when the proposed model also gets morphology."""
+    label = model if model == "baseline" or fusion == "concat" else f"{model}-{fusion}"
+    if model == "proposed" and features == "pos_dep_morph":
+        label += "-morph"
+    return label
 
 
 def metrics_filename(split: str) -> str:
     return "metrics_val.json" if split == "val" else "metrics.json"
 
 
-def build_datasets(use_features: bool, tagger: str = DEFAULT_TAGGER):
+def build_datasets(use_features: bool, tagger: str = DEFAULT_TAGGER, features: str = "pos_dep"):
     """Returns (train_ds, val_ds, test_ds, embedding_matrix, feature_dim)."""
     print(f"=== Loading splits (tagger: {tagger}) ===")
     splits = load_all_splits(DATA_DIR, tagger)
@@ -106,22 +114,31 @@ def build_datasets(use_features: bool, tagger: str = DEFAULT_TAGGER):
     np.save(os.path.join(art, "embedding_matrix.npy"), embedding_matrix)
     print(f"  vocab size: {len(vocab)}")
 
-    feature_dim, features = 0, {name: None for name in splits}
+    feature_dim = 0
     if use_features:
         print("=== Building POS/dependency one-hot features ===")
         pos_set = build_tagset(t for df in splits.values() for t in df["pos"])
         dep_set = build_tagset(t for df in splits.values() for t in df["dep"])
         save_tagsets(pos_set, dep_set, os.path.join(art, "tagsets.json"))
-        feature_dim = len(pos_set) + len(dep_set)
-        print(f"  POS tags: {len(pos_set)}  dep labels: {len(dep_set)}  fused width: {feature_dim}")
-        features = {
-            name: build_feature_arrays(df, pos_set, dep_set) for name, df in splits.items()
+        morph_set = None
+        if features == "pos_dep_morph":
+            morph_set = build_morph_set(m for df in splits.values() for m in df["morph"])
+            with open(os.path.join(art, "morphset.json"), "w", encoding="utf-8") as f:
+                json.dump(morph_set, f, ensure_ascii=False, indent=2)
+        feature_dim = len(pos_set) + len(dep_set) + (len(morph_set) if morph_set else 0)
+        print(f"  POS tags: {len(pos_set)}  dep labels: {len(dep_set)}  "
+              f"morphology pairs: {len(morph_set) if morph_set else 0}  fused width: {feature_dim}")
+        feats = {
+            name: build_feature_arrays(df, pos_set, dep_set, morph_set=morph_set)
+            for name, df in splits.items()
         }
+    else:
+        feats = {name: None for name in splits}
 
     datasets = {}
     for name, df in splits.items():
         seqs = [truncate(encode_tokens(t, vocab)) for t in df["tokens"]]
-        datasets[name] = ReviewDataset(seqs, df["label"].tolist(), features[name])
+        datasets[name] = ReviewDataset(seqs, df["label"].tolist(), feats[name])
 
     return datasets["train"], datasets["val"], datasets["test"], embedding_matrix, feature_dim
 
@@ -139,6 +156,8 @@ def main():
                    help="how the proposed model fuses calamanCy tags with FastText")
     p.add_argument("--split", choices=["val", "test"], default="val",
                    help="val for development (default); test only for the final evaluation")
+    p.add_argument("--features", choices=FEATURE_SETS, default="pos_dep",
+                   help="calamanCy features for the proposed model")
     p.add_argument("--save-checkpoint", action="store_true",
                    help="save model weights (~20MB); off by default so 30-run sweeps stay small")
     add_reg_args(p)
@@ -149,7 +168,8 @@ def main():
         return
 
     use_features = args.model == "proposed"
-    train_ds, val_ds, test_ds, embedding_matrix, feature_dim = build_datasets(use_features, args.tagger)
+    train_ds, val_ds, test_ds, embedding_matrix, feature_dim = build_datasets(
+        use_features, args.tagger, args.features)
 
     set_seed(args.seed)
     model = BiLSTMClassifier(
@@ -157,7 +177,7 @@ def main():
         freeze_embeddings=True, extra_feature_dim=feature_dim, fusion=args.fusion,
         input_dropout=reg["input_dropout"],
     )
-    label = model_label(args.model, args.fusion)
+    label = model_label(args.model, args.fusion, args.features)
     trainable = sum(q.numel() for q in model.parameters() if q.requires_grad)
     print(f"=== Model: {label} | LSTM input width: {model.lstm.input_size} "
           f"| trainable params: {trainable:,} | seed: {args.seed} | tagger: {args.tagger} ===")
@@ -185,7 +205,7 @@ def main():
     metrics["config"] = {
         "model": args.model, "fusion": model.fusion, "split": args.split,
         "seed": args.seed, "monitor": args.monitor, "tagger": args.tagger,
-        "feature_dim": feature_dim, "max_len": MAX_LEN,
+        "feature_dim": feature_dim, "features": args.features, "max_len": MAX_LEN,
         "hidden_size": 128, **reg, "batch_size": 32,
         "epochs_run": len(history), "trainable_params": trainable,
     }

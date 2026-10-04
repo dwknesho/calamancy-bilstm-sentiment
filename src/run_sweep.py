@@ -18,8 +18,8 @@ from scipy import stats
 from dataset import ReviewDataset
 from evaluate import evaluate_model
 from model import FUSIONS, BiLSTMClassifier
-from run_experiment import (add_reg_args, build_datasets, final_settings_error, metrics_filename,
-                            model_label, reg_from_args, reg_label, results_dir)
+from run_experiment import (FEATURE_SETS, add_reg_args, build_datasets, final_settings_error,
+                            metrics_filename, model_label, reg_from_args, reg_label, results_dir)
 from tokenization import DEFAULT_TAGGER
 from train import set_seed, train_model
 
@@ -38,7 +38,7 @@ def strip_features(ds: ReviewDataset) -> ReviewDataset:
 
 
 def run_one(model_name, fusion, datasets, embedding_matrix, feature_dim, seed, monitor, tagger,
-            split, verbose, reg):
+            split, verbose, reg, features="pos_dep"):
     train_ds, val_ds, test_ds = datasets
     set_seed(seed)
     model = BiLSTMClassifier(
@@ -56,11 +56,12 @@ def run_one(model_name, fusion, datasets, embedding_matrix, feature_dim, seed, m
     metrics["config"] = {
         "model": model_name, "fusion": model.fusion, "seed": seed, "monitor": monitor,
         "split": split, "feature_dim": feature_dim, "epochs_run": len(history), "tagger": tagger,
-        **reg,
+        "features": features if model_name == "proposed" else None, **reg,
     }
     metrics["history"] = history
 
-    out_dir = os.path.join(results_dir(tagger, reg, split), model_label(model_name, fusion), f"seed_{seed}")
+    out_dir = os.path.join(results_dir(tagger, reg, split), model_label(model_name, fusion, features),
+                           f"seed_{seed}")
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, metrics_filename(split)), "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
@@ -103,6 +104,8 @@ def main():
                    default=["baseline", "proposed"])
     p.add_argument("--fusion", choices=FUSIONS, default="projection",
                    help="how the proposed model fuses calamanCy tags with FastText")
+    p.add_argument("--features", choices=FEATURE_SETS, default="pos_dep",
+                   help="calamanCy features for the proposed model")
     p.add_argument("--tagger", default=DEFAULT_TAGGER)
     p.add_argument("--no-epoch-log", action="store_true", help="hide per-epoch progress lines")
     add_reg_args(p)
@@ -130,9 +133,10 @@ def main():
 
     split_label = "VALIDATION" if args.split == "val" else "TEST"
     split_tag = "val" if args.split == "val" else "test"
-    prop_label = model_label("proposed", args.fusion)
+    prop_label = model_label("proposed", args.fusion, args.features)
     out = results_dir(args.tagger, reg, args.split)
     print(f"=== Sweep on {split_label} set | tagger {args.tagger} | fusion {args.fusion} "
+          f"| features {args.features} "
           f"| models {args.models} | {len(seeds)} seeds: {seeds} ===")
     print(f"=== Training settings: {config} ===")
     print(f"=== Results folder: {out} ===")
@@ -151,13 +155,14 @@ def main():
             return
         print("Pairing against stored baseline results (baseline is deterministic).")
 
-    prop_train, prop_val, prop_test, embedding_matrix, feature_dim = build_datasets(True, args.tagger)
+    prop_train, prop_val, prop_test, embedding_matrix, feature_dim = build_datasets(
+        True, args.tagger, args.features)
     data = {
         "proposed": (prop_train, prop_val, prop_test),
         "baseline": tuple(strip_features(d) for d in (prop_train, prop_val, prop_test)),
     }
 
-    labels = [model_label(m, args.fusion) for m in args.models]
+    labels = [model_label(m, args.fusion, args.features) for m in args.models]
     results = {lbl: {k: [] for k in METRICS} for lbl in labels}
     total = len(seeds) * len(args.models)
     k = 0
@@ -176,7 +181,8 @@ def main():
                 print(f">>> already done, loaded saved result: macro_f1={met['macro_f1']:.4f}")
                 continue
             met = run_one(m, args.fusion, data[m], embedding_matrix, fd, seed, args.monitor,
-                          args.tagger, args.split, verbose=not args.no_epoch_log, reg=reg)
+                          args.tagger, args.split, verbose=not args.no_epoch_log, reg=reg,
+                          features=args.features)
             for key in METRICS:
                 results[lbl][key].append(met[key])
             print(f">>> {split_label} macro_f1={met['macro_f1']:.4f}  acc={met['accuracy']:.4f}"
@@ -233,6 +239,22 @@ def main():
             print(f"  wins {wins}/{len(diffs)} -> {'yes' if wins_ok else 'no'}")
             print(f"  RESULT: {verdict}")
             print("\n(The 0.84 benchmark test is skipped on validation -- it is a test-set number.)")
+    # Morphology arm: also compare against the stored POS + dependency proposed model.
+    if args.features != "pos_dep" and prop_label in results and len(seeds) > 1:
+        ref_label = model_label("proposed", args.fusion)
+        ref, missing = load_stored(args.tagger, ref_label, seeds, args.split, reg)
+        if missing:
+            print(f"\n(No stored {ref_label} results for seeds {missing}; skipping that comparison.)")
+        else:
+            a, r = results[prop_label]["macro_f1"], ref["macro_f1"]
+            d = [x - y for x, y in zip(a, r)]
+            t, pv = stats.ttest_rel(a, r)
+            one = pv / 2 if t > 0 else 1 - pv / 2
+            print(f"\nPaired comparison ({prop_label} - {ref_label}), {split_label} macro F1:")
+            print(f"  {ref_label} mean {statistics.mean(r):.4f} | {prop_label} mean {statistics.mean(a):.4f}")
+            print(f"  mean difference: {statistics.mean(d):+.4f} | {prop_label} wins {sum(x > 0 for x in d)}/{len(d)}")
+            print(f"  paired t-test: t={t:.3f}, two-sided p={pv:.4f}, one-tailed p={one:.4f}")
+
     if args.split == "test" and len(seeds) > 1:
         print(f"\nOne-sample t-test vs Cosme & De Leon (2024) benchmark, weighted F1 = {BENCHMARK_F1} (Ch3-F.4):")
         for lbl, vals in results.items():
@@ -243,10 +265,13 @@ def main():
 
     os.makedirs(out, exist_ok=True)
     suffix = "" if args.fusion == "concat" else f"_{args.fusion}"
+    if args.features != "pos_dep":
+        suffix += "_morph"
     fname = f"sweep_summary_{split_tag}{suffix}.json"
     with open(os.path.join(out, fname), "w", encoding="utf-8") as f:
         json.dump({"seeds": seeds, "split": args.split, "monitor": args.monitor,
-                   "tagger": args.tagger, "fusion": args.fusion, "models": args.models,
+                   "tagger": args.tagger, "fusion": args.fusion, "features": args.features,
+                   "models": args.models,
                    "training_settings": reg, "raw": results}, f, indent=2)
     print(f"\nSaved to {out}/{fname}")
 

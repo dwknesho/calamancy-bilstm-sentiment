@@ -64,12 +64,16 @@ def truncate(seq, max_len: int = MAX_LEN):
     return seq[:max_len] if len(seq) > max_len else seq
 
 
-def build_feature_arrays(df, pos_set, dep_set, max_len: int = MAX_LEN):
-    """Per-review (seq_len, P+D) one-hot arrays for the proposed model."""
-    from features import encode_token_features
+def build_feature_arrays(df, pos_set, dep_set, max_len: int = MAX_LEN, morph_set=None):
+    """Per-review (seq_len, P+D) one-hot arrays for the proposed model, plus
+    M multi-hot morphology columns when morph_set is given."""
+    from features import encode_morph, encode_token_features
 
+    morphs = df["morph"] if morph_set is not None else [None] * len(df)
     out = []
-    for pos, dep in zip(df["pos"], df["dep"]):
+    for pos, dep, morph in zip(df["pos"], df["dep"], morphs):
         feats = encode_token_features(truncate(pos, max_len), truncate(dep, max_len), pos_set, dep_set)
+        if morph_set is not None:
+            feats = np.concatenate([feats, encode_morph(truncate(morph, max_len), morph_set)], axis=1)
         out.append(np.asarray(feats, dtype=np.float32))
     return out
